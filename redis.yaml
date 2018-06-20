@@ -8,9 +8,9 @@ metadata:
     app: redis
 spec:
   ports:
-  - port: 6379
+  - port: 6377
     name: peer
-  - port: 16379
+  - port: 16377
     name: cluster
   # *.redis.default.svc.cluster.local
   clusterIP: None
@@ -20,7 +20,7 @@ spec:
 apiVersion: v1
 data:
   cluster.conf: |
-    port 6379
+    port 6377
     appendonly yes
     cluster-enabled yes
     cluster-config-file /var/lib/redis/nodes.conf
@@ -46,9 +46,20 @@ spec:
         app: redis
         role: node
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - vm172-16-16-35.ksc.com
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: redis
-          image: sporkmonger/redis-k8s:3.2.6
+          image: harbor.qyvideo.net/redis_k8s/redis:v0.2
           imagePullPolicy: Always
           args:
             - "redis-server"
@@ -61,10 +72,10 @@ spec:
               memory: "100Mi"
           ports:
             - name: redis
-              containerPort: 6379
+              containerPort: 6377
               protocol: "TCP"
             - name: cluster
-              containerPort: 16379
+              containerPort: 16377
               protocol: "TCP"
           volumeMounts:
             - name: "conf"
@@ -72,34 +83,31 @@ spec:
             - name: "data"
               mountPath: "/var/lib/redis"
         - name: "cluster-meet"
-          image: sporkmonger/redis-k8s:3.2.6
+          image: harbor.qyvideo.net/redis_k8s/redis:v0.2
           imagePullPolicy: Always
           command:
           - bash
           - "-c"
           - |
             set -e
-            peer-finder -on-start="/usr/local/bin/cluster-meet.sh" -service=redis -ns=default
+            nslookup redis | awk '/^Address: / { print $2 }' | /usr/local/bin/cluster-meet.sh
             # Don't crash loop
             sleep infinity
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: PORT
+            value: "6377"
       volumes:
         - name: "data"
-          persistentVolumeClaim:
-            claimName: "data"
+          hostPath:
+            path: /data/redis_data/
+            type: DirectoryOrCreate
         - name: "conf"
           configMap:
             name: "redis-conf"
             items:
               - key: "cluster.conf"
                 path: "cluster.conf"
-  volumeClaimTemplates:
-  - metadata:
-      name: "data"
-      annotations:
-        volume.alpha.kubernetes.io/storage-class: anything
-    spec:
-      accessModes:
-        - "ReadWriteOnce"
-      resources:
-        requests:
-          storage: 20Gi
