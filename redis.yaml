@@ -23,7 +23,7 @@ data:
     port 6377
     appendonly yes
     cluster-enabled yes
-    cluster-config-file /var/lib/redis/nodes.conf
+    cluster-config-file /var/lib/redis_conf/NAME.conf
     cluster-node-timeout 5000
     dir /var/lib/redis
 kind: ConfigMap
@@ -59,13 +59,20 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: redis
-          image: harbor.qyvideo.net/redis_k8s/redis:v0.2
+          image: harbor.qyvideo.net/redis_k8s/redis:v0.3
           imagePullPolicy: Always
-          args:
-            - "redis-server"
-            - "/etc/redis/cluster.conf"
-            - "--protected-mode"
-            - "no"
+          command:
+            - bash
+            - "-c"
+            - |
+              cp /etc/redis/cluster.conf ./my-cluster.conf
+              sed -i s/NAME/${POD_NAME}/g ./my-cluster.conf
+              redis-server ./my-cluster.conf --protected-mode no
+          env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
           resources:
             requests:
               cpu: "100m"
@@ -82,8 +89,10 @@ spec:
               mountPath: "/etc/redis"
             - name: "data"
               mountPath: "/var/lib/redis"
+            - name: "node-conf"
+              mountPath: "/var/lib/redis_conf/"
         - name: "cluster-meet"
-          image: harbor.qyvideo.net/redis_k8s/redis:v0.2
+          image: harbor.qyvideo.net/redis_k8s/redis:v0.3
           imagePullPolicy: Always
           command:
           - bash
@@ -105,6 +114,9 @@ spec:
           hostPath:
             path: /data/redis_data/
             type: DirectoryOrCreate
+        - name: "node-conf"
+          persistentVolumeClaim:
+            claimName: "myclaim1"
         - name: "conf"
           configMap:
             name: "redis-conf"
