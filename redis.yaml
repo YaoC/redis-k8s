@@ -22,8 +22,9 @@ data:
   cluster.conf: |
     port 6377
     appendonly yes
+    # cluster or alone
     cluster-enabled yes
-    cluster-config-file /var/lib/redis_conf/NAME.conf
+    cluster-config-file /var/lib/redis/nodes.conf
     cluster-node-timeout 5000
     dir /var/lib/redis
 kind: ConfigMap
@@ -33,41 +34,52 @@ metadata:
     app: redis
   namespace: default
 ---
-apiVersion: apps/v1beta1
+apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: redis
 spec:
   serviceName: redis
-  replicas: 7
+  selector:
+    matchLabels:
+      app: redis
+  replicas: 3
+#  replicas: 6
   template:
     metadata:
       labels:
         app: redis
         role: node
     spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: kubernetes.io/hostname
-                operator: NotIn
-                values:
-                - vm172-16-16-35.ksc.com
+#      affinity:
+#        podAntiAffinity:
+#          requiredDuringSchedulingIgnoredDuringExecution:
+#            - labelSelector:
+#                matchExpressions:
+#                  - key: "app"
+#                    operator: In
+#                    values:
+#                    - redis
+#              topologyKey: "kubernetes.io/hostname"
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      # Unable to save in background (redis-server)
+      # see https://stackoverflow.com/questions/42502636/unable-to-save-in-background-redis-server
+      initContainers:
+      - image: harbor.qyvideo.net/k8s/alpine:3.6
+        command: ["echo", "1", ">", "/proc/sys/vm/overcommit_memory"]
+        name: redis-init
+        securityContext:
+          privileged: true
       containers:
         - name: redis
-          image: harbor.qyvideo.net/redis_k8s/redis:v0.3
+          image: harbor.qyvideo.net/k8s/redis:0.1
           imagePullPolicy: Always
           command:
             - bash
             - "-c"
             - |
-              cp /etc/redis/cluster.conf ./my-cluster.conf
-              sed -i s/NAME/${POD_NAME}/g ./my-cluster.conf
-              redis-server ./my-cluster.conf --protected-mode no
+              redis-server /etc/redis/cluster.conf --protected-mode no
           env:
           - name: POD_NAME
             valueFrom:
@@ -76,7 +88,10 @@ spec:
           resources:
             requests:
               cpu: "100m"
-              memory: "100Mi"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "40Gi"
           ports:
             - name: redis
               containerPort: 6377
@@ -89,10 +104,9 @@ spec:
               mountPath: "/etc/redis"
             - name: "data"
               mountPath: "/var/lib/redis"
-            - name: "node-conf"
-              mountPath: "/var/lib/redis_conf/"
+        # 集群模式解注释此处：
         - name: "cluster-meet"
-          image: harbor.qyvideo.net/redis_k8s/redis:v0.3
+          image: harbor.qyvideo.net/k8s/redis:0.1
           imagePullPolicy: Always
           command:
           - bash
@@ -107,19 +121,26 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.name
+          - name: NODE
+            value: "3"
           - name: PORT
             value: "6377"
+          - name: REPLICA
+            value: "0"
       volumes:
-        - name: "data"
-          hostPath:
-            path: /data/redis_data/
-            type: DirectoryOrCreate
-        - name: "node-conf"
-          persistentVolumeClaim:
-            claimName: "myclaim1"
         - name: "conf"
           configMap:
             name: "redis-conf"
             items:
               - key: "cluster.conf"
                 path: "cluster.conf"
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteMany
+      storageClassName: redis-storage
+      resources:
+        requests:
+          storage: 100Gi
